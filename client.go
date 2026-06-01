@@ -153,7 +153,9 @@ func (client *Client) CaptureEvent(ctx context.Context, event Event, options ...
 	if err != nil {
 		return Response{}, fmt.Errorf("monirus: send event: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 
 	var payload apiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
