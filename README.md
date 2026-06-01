@@ -18,25 +18,20 @@ export MONIRUS_DSN="http://localhost:8080/api/v1/events?key=public-key"
 package main
 
 import (
-	"context"
 	"log"
 	"os"
+	"time"
 
 	monirus "github.com/moni-rus/moni-go"
 )
 
 func main() {
-	client, err := monirus.NewClientFromDSN(os.Getenv("MONIRUS_DSN"))
-	if err != nil {
+	if err := monirus.Init(os.Getenv("MONIRUS_DSN")); err != nil {
 		log.Fatal(err)
 	}
+	defer monirus.Flush(2 * time.Second)
 
-	_, err = client.CaptureMessage(
-		context.Background(),
-		"payment failed",
-		monirus.WithTag("component", "checkout"),
-	)
-	if err != nil {
+	if err := monirus.CaptureMessage("payment failed", monirus.WithTag("component", "checkout")); err != nil {
 		log.Fatal(err)
 	}
 }

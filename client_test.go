@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestCaptureMessageQueuesEvent(t *testing.T) {
@@ -58,5 +59,82 @@ func TestNewClientFromDSN(t *testing.T) {
 	}
 	if client.APIKey() != "abc123" {
 		t.Fatalf("unexpected api key %q", client.APIKey())
+	}
+}
+
+func TestPackageCaptureMessageFlushesEvent(t *testing.T) {
+	received := make(chan Event, 1)
+	keys := make(chan string, 1)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload Event
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode payload: %v", err)
+		}
+		keys <- r.Header.Get("X-Monirus-Key")
+		received <- payload
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"event_id":"evt-global","queued":true}}`))
+	}))
+	defer server.Close()
+
+	if err := Init(server.URL+"?key=public-key", WithRelease("api@1.0.0"), WithEnvironment("production")); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	if err := CaptureMessage("payment failed", WithTag("component", "checkout")); err != nil {
+		t.Fatalf("capture message: %v", err)
+	}
+	if !Flush(time.Second) {
+		t.Fatal("flush timed out")
+	}
+
+	select {
+	case gotKey := <-keys:
+		if gotKey != "public-key" {
+			t.Fatalf("unexpected key %q", gotKey)
+		}
+	default:
+		t.Fatal("server did not receive api key")
+	}
+
+	select {
+	case gotPayload := <-received:
+		if gotPayload.Message != "payment failed" || gotPayload.Release != "api@1.0.0" || gotPayload.Environment != "production" {
+			t.Fatalf("unexpected payload: %#v", gotPayload)
+		}
+		if gotPayload.Tags["component"] != "checkout" {
+			t.Fatalf("missing tag: %#v", gotPayload.Tags)
+		}
+	default:
+		t.Fatal("server did not receive payload")
+	}
+}
+
+func TestPackageFlushTimesOut(t *testing.T) {
+	unblock := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-unblock
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"event_id":"evt-slow","queued":true}}`))
+	}))
+	defer server.Close()
+
+	if err := Init(server.URL + "?key=public-key"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := CaptureMessage("slow event"); err != nil {
+		t.Fatalf("capture message: %v", err)
+	}
+
+	if Flush(10 * time.Millisecond) {
+		t.Fatal("flush completed before the request was released")
+	}
+
+	close(unblock)
+	if !Flush(time.Second) {
+		t.Fatal("flush timed out after request was released")
 	}
 }
